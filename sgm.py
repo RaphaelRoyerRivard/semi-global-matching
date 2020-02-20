@@ -133,11 +133,11 @@ def get_path_cost(slice, offset, parameters):
     disparities = [d for d in range(disparity_dim)] * disparity_dim
     disparities = np.array(disparities).reshape(disparity_dim, disparity_dim)
 
-    penalties = np.zeros(shape=(disparity_dim, disparity_dim), dtype=np.uint32)
+    penalties = np.zeros(shape=(disparity_dim, disparity_dim), dtype=slice.dtype)
     penalties[np.abs(disparities - disparities.T) == 1] = parameters.P1
     penalties[np.abs(disparities - disparities.T) > 1] = parameters.P2
 
-    minimum_cost_path = np.zeros(shape=(other_dim, disparity_dim), dtype=np.uint32)
+    minimum_cost_path = np.zeros(shape=(other_dim, disparity_dim), dtype=slice.dtype)
     minimum_cost_path[offset - 1, :] = slice[offset - 1, :]
 
     for i in range(offset, other_dim):
@@ -160,10 +160,16 @@ def aggregate_costs(cost_volume, parameters, paths):
     height = cost_volume.shape[0]
     width = cost_volume.shape[1]
     disparities = cost_volume.shape[2]
+
     start = -(height - 1)
     end = width - 1
 
-    aggregation_volume = np.zeros(shape=(height, width, disparities, paths.size), dtype=np.uint32)
+    average_cost = cost_volume.mean()
+    parameters.P1 = 0.25 * average_cost
+    parameters.P2 = 3.5 * average_cost
+    print(f"average cost: {average_cost}, p1: {parameters.P1}, p2: {parameters.P2}")
+
+    aggregation_volume = np.zeros(shape=(height, width, disparities, paths.size), dtype=cost_volume.dtype)
 
     path_id = 0
     for path in paths.effective_paths:
@@ -171,7 +177,7 @@ def aggregate_costs(cost_volume, parameters, paths):
         sys.stdout.flush()
         dawn = t.time()
 
-        main_aggregation = np.zeros(shape=(height, width, disparities), dtype=np.uint32)
+        main_aggregation = np.zeros(shape=(height, width, disparities), dtype=aggregation_volume.dtype)
         opposite_aggregation = np.copy(main_aggregation)
 
         main = path[0]
@@ -308,14 +314,14 @@ def compute_costs(left, right, parameters, save_images):
             # Normalizing the summed features for visualization
             left_img_features = 255 * (left_img_features - left_img_features.min()) / (left_img_features.max() - left_img_features.min())
             right_img_features = 255 * (right_img_features - right_img_features.min()) / (right_img_features.max() - right_img_features.min())
-        cv2.imwrite('left_features.png', left_img_features)
-        cv2.imwrite('right_features.png', right_img_features)
+        cv2.imwrite(f'left_features_{parameters.descriptor}.png', left_img_features)
+        cv2.imwrite(f'right_features_{parameters.descriptor}.png', right_img_features)
 
     print('\tComputing cost volumes...', end='')
     sys.stdout.flush()
     dawn = t.time()
     left_cost_volume = np.zeros(shape=(height, width, disparity), dtype=np.uint32 if BRIEF else np.float)
-    right_cost_volume = np.zeros(shape=(height, width, disparity), dtype=np.uint32if if BRIEF else np.float)
+    right_cost_volume = np.zeros(shape=(height, width, disparity), dtype=np.uint32 if BRIEF else np.float)
     lfeatures = np.zeros(shape=(height, width), dtype=np.int64) if BRIEF else np.zeros(shape=(height, width, parameters.orientations), dtype=np.float)
     rfeatures = np.zeros(shape=(height, width), dtype=np.int64) if BRIEF else np.zeros(shape=(height, width, parameters.orientations), dtype=np.float)
     for d in range(0, disparity):
@@ -386,6 +392,9 @@ def get_recall(disparity, gt, args):
     gt = np.int16(gt / np.amax(gt) * float(args.disp))
     disparity = np.int16(np.float32(disparity) / np.amax(disparity) * float(args.disp))
     correct = np.count_nonzero(np.abs(disparity - gt) <= 3)
+    correct2 = np.count_nonzero(np.abs(disparity - gt) <= 5)
+    print("<=3", float(correct) / gt.size)
+    print("<=5", float(correct2) / gt.size)
     return float(correct) / gt.size
 
 
@@ -430,9 +439,9 @@ def sgm():
     left_cost_volume, right_cost_volume = compute_costs(left, right, parameters, save_images)
     if save_images:
         left_disparity_map = np.uint8(normalize(np.argmin(left_cost_volume, axis=2), parameters))
-        cv2.imwrite('disp_map_left_cost_volume.png', left_disparity_map)
+        cv2.imwrite(f'disp_map_left_cost_volume_{parameters.descriptor}.png', left_disparity_map)
         right_disparity_map = np.uint8(normalize(np.argmin(right_cost_volume, axis=2), parameters))
-        cv2.imwrite('disp_map_right_cost_volume.png', right_disparity_map)
+        cv2.imwrite(f'disp_map_right_cost_volume_{parameters.descriptor}.png', right_disparity_map)
 
     print('\nStarting left aggregation computation...')
     left_aggregation_volume = aggregate_costs(left_cost_volume, parameters, paths)
@@ -443,14 +452,14 @@ def sgm():
     left_disparity_map = np.uint8(normalize(select_disparity(left_aggregation_volume), parameters))
     right_disparity_map = np.uint8(normalize(select_disparity(right_aggregation_volume), parameters))
     if save_images:
-        cv2.imwrite('left_disp_map_no_post_processing.png', left_disparity_map)
-        cv2.imwrite('right_disp_map_no_post_processing.png', right_disparity_map)
+        cv2.imwrite(f'left_disp_map_no_post_processing_{parameters.descriptor}.png', left_disparity_map)
+        cv2.imwrite(f'right_disp_map_no_post_processing_{parameters.descriptor}.png', right_disparity_map)
 
     print('\nApplying median filter...')
     left_disparity_map = cv2.medianBlur(left_disparity_map, parameters.bsize[0])
     right_disparity_map = cv2.medianBlur(right_disparity_map, parameters.bsize[0])
-    cv2.imwrite(f'left_{output_name}', left_disparity_map)
-    cv2.imwrite(f'right_{output_name}', right_disparity_map)
+    cv2.imwrite(f'left_{parameters.descriptor}_{output_name}', left_disparity_map)
+    cv2.imwrite(f'right_{parameters.descriptor}_{output_name}', right_disparity_map)
 
     if evaluation:
         print('\nEvaluating left disparity map...')
