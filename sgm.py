@@ -4,6 +4,9 @@ and Mutual Information (https://core.ac.uk/download/pdf/11134866.pdf) by Heiko H
 
 author: David-Alexandre Beaupre
 date: 2019/07/12
+
+edited by: Raphael Royer-Rivard
+date: 2020/02/19
 """
 
 import argparse
@@ -11,6 +14,7 @@ import sys
 import time as t
 
 import cv2
+from skimage.feature import hog
 import numpy as np
 
 
@@ -47,20 +51,24 @@ class Paths:
 
 
 class Parameters:
-    def __init__(self, max_disparity=64, P1=5, P2=70, csize=(7, 7), bsize=(3, 3)):
+    def __init__(self, max_disparity=64, P1=5, P2=70, csize=(7, 7), bsize=(3, 3), descriptor='BRIEF', orientations=9):
         """
         represent all parameters used in the sgm algorithm.
         :param max_disparity: maximum distance between the same pixel in both images.
         :param P1: penalty for disparity difference = 1
         :param P2: penalty for disparity difference > 1
-        :param csize: size of the kernel for the census transform.
+        :param csize: size of the kernel for the census transform (or cell size for the HOG descriptor).
         :param bsize: size of the kernel for blurring the images and median filtering.
+        :param descriptor: BRIEF (census transform) or HOG
+        :param orientations: number of orientations to use with HOG
         """
         self.max_disparity = max_disparity
         self.P1 = P1
         self.P2 = P2
         self.csize = csize
         self.bsize = bsize
+        self.descriptor = descriptor
+        self.orientations = orientations
 
 
 def load_images(left_name, right_name, parameters):
@@ -215,7 +223,9 @@ def aggregate_costs(cost_volume, parameters, paths):
 
 def compute_costs(left, right, parameters, save_images):
     """
-    first step of the sgm algorithm, matching cost based on census transform and hamming distance.
+    first step of the sgm algorithm, matching cost based on the chosen descriptor
+        A) census transform (BRIEF) and hamming distance
+        B) HOG and SSD
     :param left: left image.
     :param right: right image.
     :param parameters: structure containing parameters of the algorithm.
@@ -225,6 +235,8 @@ def compute_costs(left, right, parameters, save_images):
     assert left.shape[0] == right.shape[0] and left.shape[1] == right.shape[1], 'left & right must have the same shape.'
     assert parameters.max_disparity > 0, 'maximum disparity must be greater than 0.'
 
+    BRIEF = parameters.descriptor == 'BRIEF'
+
     height = left.shape[0]
     width = left.shape[1]
     cheight = parameters.csize[0]
@@ -233,85 +245,107 @@ def compute_costs(left, right, parameters, save_images):
     x_offset = int(cwidth / 2)
     disparity = parameters.max_disparity
 
-    left_img_census = np.zeros(shape=(height, width), dtype=np.uint8)
-    right_img_census = np.zeros(shape=(height, width), dtype=np.uint8)
-    left_census_values = np.zeros(shape=(height, width), dtype=np.uint64)
-    right_census_values = np.zeros(shape=(height, width), dtype=np.uint64)
+    left_img_features = np.zeros(shape=(height, width), dtype=np.uint8 if BRIEF else np.float)
+    right_img_features = np.zeros(shape=(height, width), dtype=np.uint8 if BRIEF else np.float)
+    left_features = np.zeros(shape=(height, width), dtype=np.uint64) if BRIEF else np.zeros(shape=(height, width, parameters.orientations), dtype=np.float)
+    right_features = np.zeros(shape=(height, width), dtype=np.uint64) if BRIEF else np.zeros(shape=(height, width, parameters.orientations), dtype=np.float)
 
-    print('\tComputing left and right census...', end='')
+    print('\tComputing left and right features...', end='')
     sys.stdout.flush()
     dawn = t.time()
-    # pixels on the border will have no census values
+    # pixels on the border will have no features
     for y in range(y_offset, height - y_offset):
         for x in range(x_offset, width - x_offset):
-            left_census = np.int64(0)
             center_pixel = left[y, x]
-            reference = np.full(shape=(cheight, cwidth), fill_value=center_pixel, dtype=np.int64)
             image = left[(y - y_offset):(y + y_offset + 1), (x - x_offset):(x + x_offset + 1)]
-            comparison = image - reference
-            for j in range(comparison.shape[0]):
-                for i in range(comparison.shape[1]):
-                    if (i, j) != (y_offset, x_offset):
-                        left_census = left_census << 1
-                        if comparison[j, i] < 0:
-                            bit = 1
-                        else:
-                            bit = 0
-                        left_census = left_census | bit
-            left_img_census[y, x] = np.uint8(left_census)
-            left_census_values[y, x] = left_census
+            if BRIEF:
+                reference = np.full(shape=(cheight, cwidth), fill_value=center_pixel, dtype=np.int64)
+                comparison = image - reference
+                left_census = np.int64(0)
+                for j in range(comparison.shape[0]):
+                    for i in range(comparison.shape[1]):
+                        if (i, j) != (y_offset, x_offset):
+                            left_census = left_census << 1
+                            if comparison[j, i] < 0:
+                                bit = 1
+                            else:
+                                bit = 0
+                            left_census = left_census | bit
+                left_img_features[y, x] = np.uint8(left_census)
+                left_features[y, x] = left_census
+            else:  # HOG
+                # print(y, x, image.shape)
+                left_features[y, x] = hog(image, parameters.orientations, pixels_per_cell=(cheight, cwidth), cells_per_block=(1, 1))
+                # print(left_features[y, x])
+                left_img_features[y, x] = left_features[y, x].sum()
 
-            right_census = np.int64(0)
             center_pixel = right[y, x]
-            reference = np.full(shape=(cheight, cwidth), fill_value=center_pixel, dtype=np.int64)
             image = right[(y - y_offset):(y + y_offset + 1), (x - x_offset):(x + x_offset + 1)]
-            comparison = image - reference
-            for j in range(comparison.shape[0]):
-                for i in range(comparison.shape[1]):
-                    if (i, j) != (y_offset, x_offset):
-                        right_census = right_census << 1
-                        if comparison[j, i] < 0:
-                            bit = 1
-                        else:
-                            bit = 0
-                        right_census = right_census | bit
-            right_img_census[y, x] = np.uint8(right_census)
-            right_census_values[y, x] = right_census
+            if BRIEF:
+                reference = np.full(shape=(cheight, cwidth), fill_value=center_pixel, dtype=np.int64)
+                comparison = image - reference
+                right_census = np.int64(0)
+                for j in range(comparison.shape[0]):
+                    for i in range(comparison.shape[1]):
+                        if (i, j) != (y_offset, x_offset):
+                            right_census = right_census << 1
+                            if comparison[j, i] < 0:
+                                bit = 1
+                            else:
+                                bit = 0
+                            right_census = right_census | bit
+                right_img_features[y, x] = np.uint8(right_census)
+                right_features[y, x] = right_census
+            else:  # HOG
+                right_features[y, x] = hog(image, parameters.orientations, pixels_per_cell=(cheight, cwidth), cells_per_block=(1, 1))
+                right_img_features[y, x] = right_features[y, x].sum()
 
     dusk = t.time()
     print('\t(done in {:.2f}s)'.format(dusk - dawn))
 
     if save_images:
-        cv2.imwrite('left_census.png', left_img_census)
-        cv2.imwrite('right_census.png', right_img_census)
+        if not BRIEF:
+            # Normalizing the summed features for visualization
+            left_img_features = 255 * (left_img_features - left_img_features.min()) / (left_img_features.max() - left_img_features.min())
+            right_img_features = 255 * (right_img_features - right_img_features.min()) / (right_img_features.max() - right_img_features.min())
+        cv2.imwrite('left_features.png', left_img_features)
+        cv2.imwrite('right_features.png', right_img_features)
 
     print('\tComputing cost volumes...', end='')
     sys.stdout.flush()
     dawn = t.time()
-    left_cost_volume = np.zeros(shape=(height, width, disparity), dtype=np.uint32)
-    right_cost_volume = np.zeros(shape=(height, width, disparity), dtype=np.uint32)
-    lcensus = np.zeros(shape=(height, width), dtype=np.int64)
-    rcensus = np.zeros(shape=(height, width), dtype=np.int64)
+    left_cost_volume = np.zeros(shape=(height, width, disparity), dtype=np.uint32 if BRIEF else np.float)
+    right_cost_volume = np.zeros(shape=(height, width, disparity), dtype=np.uint32if if BRIEF else np.float)
+    lfeatures = np.zeros(shape=(height, width), dtype=np.int64) if BRIEF else np.zeros(shape=(height, width, parameters.orientations), dtype=np.float)
+    rfeatures = np.zeros(shape=(height, width), dtype=np.int64) if BRIEF else np.zeros(shape=(height, width, parameters.orientations), dtype=np.float)
     for d in range(0, disparity):
-        rcensus[:, (x_offset + d):(width - x_offset)] = right_census_values[:, x_offset:(width - d - x_offset)]
-        left_xor = np.int64(np.bitwise_xor(np.int64(left_census_values), rcensus))
-        left_distance = np.zeros(shape=(height, width), dtype=np.uint32)
-        while not np.all(left_xor == 0):
-            tmp = left_xor - 1
-            mask = left_xor != 0
-            left_xor[mask] = np.bitwise_and(left_xor[mask], tmp[mask])
-            left_distance[mask] = left_distance[mask] + 1
-        left_cost_volume[:, :, d] = left_distance
+        rfeatures[:, (x_offset + d):(width - x_offset)] = right_features[:, x_offset:(width - d - x_offset)]
+        if BRIEF:
+            left_xor = np.int64(np.bitwise_xor(np.int64(left_features), rfeatures))
+            left_distance = np.zeros(shape=(height, width), dtype=np.uint32)
+            while not np.all(left_xor == 0):
+                tmp = left_xor - 1
+                mask = left_xor != 0
+                left_xor[mask] = np.bitwise_and(left_xor[mask], tmp[mask])
+                left_distance[mask] = left_distance[mask] + 1
+            left_cost_volume[:, :, d] = left_distance
+        else:
+            diff = left_features - rfeatures  # (H, W, orientations)
+            left_cost_volume[:, :, d] = np.sqrt(np.sum(diff**2, 2))  # Summed Squared Difference along the last axis
 
-        lcensus[:, x_offset:(width - d - x_offset)] = left_census_values[:, (x_offset + d):(width - x_offset)]
-        right_xor = np.int64(np.bitwise_xor(np.int64(right_census_values), lcensus))
-        right_distance = np.zeros(shape=(height, width), dtype=np.uint32)
-        while not np.all(right_xor == 0):
-            tmp = right_xor - 1
-            mask = right_xor != 0
-            right_xor[mask] = np.bitwise_and(right_xor[mask], tmp[mask])
-            right_distance[mask] = right_distance[mask] + 1
-        right_cost_volume[:, :, d] = right_distance
+        lfeatures[:, x_offset:(width - d - x_offset)] = left_features[:, (x_offset + d):(width - x_offset)]
+        if BRIEF:
+            right_xor = np.int64(np.bitwise_xor(np.int64(right_features), lfeatures))
+            right_distance = np.zeros(shape=(height, width), dtype=np.uint32)
+            while not np.all(right_xor == 0):
+                tmp = right_xor - 1
+                mask = right_xor != 0
+                right_xor[mask] = np.bitwise_and(right_xor[mask], tmp[mask])
+                right_distance[mask] = right_distance[mask] + 1
+            right_cost_volume[:, :, d] = right_distance
+        else:
+            diff = right_features - lfeatures  # (H, W, orientations)
+            right_cost_volume[:, :, d] = np.sqrt(np.sum(diff**2, 2))  # Summed Squared Difference along the last axis
 
     dusk = t.time()
     print('\t(done in {:.2f}s)'.format(dusk - dawn))
@@ -369,6 +403,8 @@ def sgm():
     parser.add_argument('--disp', default=64, type=int, help='maximum disparity for the stereo pair')
     parser.add_argument('--images', default=False, type=bool, help='save intermediate representations')
     parser.add_argument('--eval', default=True, type=bool, help='evaluate disparity map with 3 pixel error')
+    parser.add_argument('--descriptor', default='BRIEF', help='descriptor method for cost calculation (BRIEF or HOG)')
+    parser.add_argument('--orientations', default=9, type=int, help='number of orientations to use with HOG)')
     args = parser.parse_args()
 
     left_name = args.left
@@ -379,10 +415,12 @@ def sgm():
     disparity = args.disp
     save_images = args.images
     evaluation = args.eval
+    descriptor = args.descriptor
+    orientations = args.orientations
 
     dawn = t.time()
 
-    parameters = Parameters(max_disparity=disparity, P1=10, P2=120, csize=(7, 7), bsize=(3, 3))
+    parameters = Parameters(max_disparity=disparity, P1=10, P2=120, csize=(7, 7), bsize=(3, 3), descriptor=descriptor, orientations=orientations)
     paths = Paths()
 
     print('\nLoading images...')
