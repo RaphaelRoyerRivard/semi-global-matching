@@ -165,8 +165,8 @@ def aggregate_costs(cost_volume, parameters, paths):
     end = width - 1
 
     average_cost = cost_volume.mean()
-    parameters.P1 = 0.25 * average_cost
-    parameters.P2 = 3.5 * average_cost
+    parameters.P1 = 0.5 * average_cost
+    parameters.P2 = 6 * average_cost
     print(f"average cost: {average_cost}, p1: {parameters.P1}, p2: {parameters.P2}")
 
     aggregation_volume = np.zeros(shape=(height, width, disparities, paths.size), dtype=cost_volume.dtype)
@@ -380,21 +380,20 @@ def normalize(volume, parameters):
     return 255.0 * volume / parameters.max_disparity
 
 
-def get_recall(disparity, gt, args):
+def get_recall(disparity, gt_path, args):
     """
     computes the recall of the disparity map.
     :param disparity: disparity image.
-    :param gt: path to ground-truth image.
+    :param gt_path: path to ground-truth image.
     :param args: program arguments.
     :return: rate of correct predictions.
     """
-    gt = np.float32(cv2.imread(gt, cv2.IMREAD_GRAYSCALE))
-    gt = np.int16(gt / np.amax(gt) * float(args.disp))
-    disparity = np.int16(np.float32(disparity) / np.amax(disparity) * float(args.disp))
+    gt = np.float32(cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE))
+    gt = np.int16(gt / 255.0 * float(args.disp))  # between 0 and args.disp (64)
+    disparity = np.int16(np.float32(disparity) / 255.0 * float(args.disp))  # between 0 and args.disp (64)
     correct = np.count_nonzero(np.abs(disparity - gt) <= 3)
-    correct2 = np.count_nonzero(np.abs(disparity - gt) <= 5)
-    print("<=3", float(correct) / gt.size)
-    print("<=5", float(correct2) / gt.size)
+    cv2.imwrite(f'{gt_path.split("/")[-1].split(".")[0]}_{args.descriptor}_diff.png', np.abs(disparity - gt) / float(args.disp) * 255)
+    cv2.imwrite(f'{gt_path.split("/")[-1].split(".")[0]}_{args.descriptor}_error.png', (np.abs(disparity - gt) > 3) * 255)
     return float(correct) / gt.size
 
 
