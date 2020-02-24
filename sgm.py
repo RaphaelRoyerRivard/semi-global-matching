@@ -12,6 +12,7 @@ date: 2020/02/19
 import argparse
 import sys
 import time as t
+import os
 
 import cv2
 from skimage.feature import hog
@@ -51,7 +52,7 @@ class Paths:
 
 
 class Parameters:
-    def __init__(self, max_disparity=64, P1=5, P2=70, csize=(7, 7), bsize=(3, 3), descriptor='BRIEF', orientations=9):
+    def __init__(self, max_disparity=64, P1=5, P2=70, csize=(7, 7), bsize=(3, 3), descriptor='BRIEF', orientations=9, folder="."):
         """
         represent all parameters used in the sgm algorithm.
         :param max_disparity: maximum distance between the same pixel in both images.
@@ -61,6 +62,7 @@ class Parameters:
         :param bsize: size of the kernel for blurring the images and median filtering.
         :param descriptor: BRIEF (census transform) or HOG
         :param orientations: number of orientations to use with HOG
+        :param folder: folder in which to save the images
         """
         self.max_disparity = max_disparity
         self.P1 = P1
@@ -69,6 +71,7 @@ class Parameters:
         self.bsize = bsize
         self.descriptor = descriptor
         self.orientations = orientations
+        self.folder = folder
 
 
 def load_images(left_name, right_name, parameters):
@@ -314,8 +317,8 @@ def compute_costs(left, right, parameters, save_images):
             # Normalizing the summed features for visualization
             left_img_features = 255 * (left_img_features - left_img_features.min()) / (left_img_features.max() - left_img_features.min())
             right_img_features = 255 * (right_img_features - right_img_features.min()) / (right_img_features.max() - right_img_features.min())
-        cv2.imwrite(f'left_features_{parameters.descriptor}.png', left_img_features)
-        cv2.imwrite(f'right_features_{parameters.descriptor}.png', right_img_features)
+        cv2.imwrite(f'{parameters.folder}/left_features.png', left_img_features)
+        cv2.imwrite(f'{parameters.folder}/right_features.png', right_img_features)
 
     print('\tComputing cost volumes...', end='')
     sys.stdout.flush()
@@ -391,10 +394,34 @@ def get_recall(disparity, gt_path, args):
     gt = np.float32(cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE))
     gt = np.int16(gt / 255.0 * float(args.disp))  # between 0 and args.disp (64)
     disparity = np.int16(np.float32(disparity) / 255.0 * float(args.disp))  # between 0 and args.disp (64)
-    correct = np.count_nonzero(np.abs(disparity - gt) <= 3)
-    cv2.imwrite(f'{gt_path.split("/")[-1].split(".")[0]}_{args.descriptor}_diff.png', np.abs(disparity - gt) / float(args.disp) * 255)
-    cv2.imwrite(f'{gt_path.split("/")[-1].split(".")[0]}_{args.descriptor}_error.png', (np.abs(disparity - gt) > 3) * 255)
+    diff = np.abs(disparity - gt)
+    correct = np.count_nonzero(diff <= 3)
+    cv2.imwrite(f'{args.output}/{gt_path.split("/")[-1].split(".")[0]}_diff.png', diff / float(args.disp) * 255)
+    cv2.imwrite(f'{args.output}/{gt_path.split("/")[-1].split(".")[0]}_error.png', (diff > 3) * 255)
     return float(correct) / gt.size
+
+
+def evaluate_disparity_map(disparity, gt_path, args):
+    """
+    Computes the recall and the BMPRE (Bad Matching Pixels Relative Error) of the disparity map.
+    It takes into account the relative error of disparities above a threshold and scales them based on the ground truth
+    depth so that an error x in the background counts for more than the same error x in the foreground.
+    https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=6491759
+    :param disparity: disparity image.
+    :param gt_path: path to ground-truth image.
+    :param args: program arguments.
+    :return: evaluation value of the disparity map (the lower the better).
+    """
+    gt = np.float32(cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE))
+    gt = np.int16(gt / 255.0 * float(args.disp))  # between 0 and args.disp (64)
+    disparity = np.int16(np.float32(disparity) / 255.0 * float(args.disp))  # between 0 and args.disp (64)
+    diff = np.abs(disparity - gt)
+    recall = np.count_nonzero(np.abs(disparity - gt) <= 3)
+    diff[np.where(diff <= 3)] = 0
+    gt[np.where(gt == 0)] = np.iinfo(np.int16).max
+    diff_relative_to_depth = diff / gt
+    bmpre = diff_relative_to_depth.sum()
+    return float(recall) / gt.size, float(bmpre) / gt.size
 
 
 def sgm():
@@ -407,10 +434,10 @@ def sgm():
     parser.add_argument('--right', default='cones/im6.png', help='name (path) to the right image')
     parser.add_argument('--left_gt', default='cones/disp2.png', help='name (path) to the left ground-truth image')
     parser.add_argument('--right_gt', default='cones/disp6.png', help='name (path) to the right ground-truth image')
-    parser.add_argument('--output', default='disparity_map.png', help='name of the output image')
+    parser.add_argument('--output', default='disparity_map.png', help='name of the output folder')
     parser.add_argument('--disp', default=64, type=int, help='maximum disparity for the stereo pair')
     parser.add_argument('--images', default=False, type=bool, help='save intermediate representations')
-    parser.add_argument('--eval', default=True, type=bool, help='evaluate disparity map with 3 pixel error')
+    parser.add_argument('--eval', default=None, help='evaluate disparity map with recall and BMPRE, both with 3 pixel threshold')
     parser.add_argument('--descriptor', default='BRIEF', help='descriptor method for cost calculation (BRIEF or HOG)')
     parser.add_argument('--orientations', default=9, type=int, help='number of orientations to use with HOG)')
     args = parser.parse_args()
@@ -419,16 +446,19 @@ def sgm():
     right_name = args.right
     left_gt_name = args.left_gt
     right_gt_name = args.right_gt
-    output_name = args.output
+    output_folder = args.output
     disparity = args.disp
     save_images = args.images
-    evaluation = args.eval
+    evaluate = args.eval
     descriptor = args.descriptor
     orientations = args.orientations
 
     dawn = t.time()
 
-    parameters = Parameters(max_disparity=disparity, P1=10, P2=120, csize=(7, 7), bsize=(3, 3), descriptor=descriptor, orientations=orientations)
+    if not os.path.exists(output_folder):
+        os.mkdir(output_folder)
+
+    parameters = Parameters(max_disparity=disparity, P1=10, P2=120, csize=(7, 7), bsize=(3, 3), descriptor=descriptor, orientations=orientations, folder=output_folder)
     paths = Paths()
 
     print('\nLoading images...')
@@ -438,9 +468,9 @@ def sgm():
     left_cost_volume, right_cost_volume = compute_costs(left, right, parameters, save_images)
     if save_images:
         left_disparity_map = np.uint8(normalize(np.argmin(left_cost_volume, axis=2), parameters))
-        cv2.imwrite(f'disp_map_left_cost_volume_{parameters.descriptor}.png', left_disparity_map)
+        cv2.imwrite(f'{output_folder}/disp_map_left_cost_volume.png', left_disparity_map)
         right_disparity_map = np.uint8(normalize(np.argmin(right_cost_volume, axis=2), parameters))
-        cv2.imwrite(f'disp_map_right_cost_volume_{parameters.descriptor}.png', right_disparity_map)
+        cv2.imwrite(f'{output_folder}/disp_map_right_cost_volume.png', right_disparity_map)
 
     print('\nStarting left aggregation computation...')
     left_aggregation_volume = aggregate_costs(left_cost_volume, parameters, paths)
@@ -451,22 +481,27 @@ def sgm():
     left_disparity_map = np.uint8(normalize(select_disparity(left_aggregation_volume), parameters))
     right_disparity_map = np.uint8(normalize(select_disparity(right_aggregation_volume), parameters))
     if save_images:
-        cv2.imwrite(f'left_disp_map_no_post_processing_{parameters.descriptor}.png', left_disparity_map)
-        cv2.imwrite(f'right_disp_map_no_post_processing_{parameters.descriptor}.png', right_disparity_map)
+        cv2.imwrite(f'{output_folder}/left_disp_map_no_post_processing.png', left_disparity_map)
+        cv2.imwrite(f'{output_folder}/right_disp_map_no_post_processing.png', right_disparity_map)
 
     print('\nApplying median filter...')
     left_disparity_map = cv2.medianBlur(left_disparity_map, parameters.bsize[0])
     right_disparity_map = cv2.medianBlur(right_disparity_map, parameters.bsize[0])
-    cv2.imwrite(f'left_{parameters.descriptor}_{output_name}', left_disparity_map)
-    cv2.imwrite(f'right_{parameters.descriptor}_{output_name}', right_disparity_map)
+    cv2.imwrite(f'{output_folder}/left_disparity_map.png', left_disparity_map)
+    cv2.imwrite(f'{output_folder}/right_disparity_map.png', right_disparity_map)
 
-    if evaluation:
+    if evaluate:
+        f = open(f'{output_folder}/result.txt', 'w+')
         print('\nEvaluating left disparity map...')
-        recall = get_recall(left_disparity_map, left_gt_name, args)
+        recall, bmpre = evaluate_disparity_map(left_disparity_map, left_gt_name, args)
         print('\tRecall = {:.2f}%'.format(recall * 100.0))
+        print('\tBMPRE = {:.5f}'.format(bmpre))
+        f.write('{:.2f};{:.5f}\n'.format(recall * 100.0, bmpre))
         print('\nEvaluating right disparity map...')
-        recall = get_recall(right_disparity_map, right_gt_name, args)
+        recall, bmpre = evaluate_disparity_map(right_disparity_map, right_gt_name, args)
         print('\tRecall = {:.2f}%'.format(recall * 100.0))
+        print('\tBMPRE = {:.5f}'.format(bmpre))
+        f.write('{:.2f};{:.5f}\n'.format(recall * 100.0, bmpre))
 
     dusk = t.time()
     print('\nFin.')
