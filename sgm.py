@@ -15,7 +15,9 @@ import time as t
 import os
 
 import cv2
-from skimage.feature import hog
+from skimage.feature import hog, BRIEF
+from sklearn.utils.extmath import cartesian
+from scipy.spatial.distance import cdist
 import numpy as np
 
 
@@ -52,25 +54,27 @@ class Paths:
 
 
 class Parameters:
-    def __init__(self, max_disparity=64, P1=5, P2=70, csize=(7, 7), bsize=(3, 3), descriptor='BRIEF', orientations=9, folder="."):
+    def __init__(self, max_disparity=64, P1_ratio=0.5, P2_ratio=6, csize=(7, 7), bsize=(3, 3), descriptor='BRIEF', BRIEF_descriptor_size=128, HOG_orientations=9, folder="."):
         """
         represent all parameters used in the sgm algorithm.
         :param max_disparity: maximum distance between the same pixel in both images.
-        :param P1: penalty for disparity difference = 1
-        :param P2: penalty for disparity difference > 1
+        :param P1_ratio: penalty ratio of average cost for disparity difference = 1
+        :param P2_ratio: penalty ratio of average cost for disparity difference > 1
         :param csize: size of the kernel for the census transform (or cell size for the HOG descriptor).
         :param bsize: size of the kernel for blurring the images and median filtering.
-        :param descriptor: BRIEF (census transform) or HOG
-        :param orientations: number of orientations to use with HOG
+        :param descriptor: BRIEF, HOG or census
+        :param BRIEF_descriptor_size: descriptor size to use with BRIEF
+        :param HOG_orientations: number of orientations to use with HOG
         :param folder: folder in which to save the images
         """
         self.max_disparity = max_disparity
-        self.P1 = P1
-        self.P2 = P2
+        self.P1_ratio = P1_ratio
+        self.P2_ratio = P2_ratio
         self.csize = csize
         self.bsize = bsize
         self.descriptor = descriptor
-        self.orientations = orientations
+        self.BRIEF_descriptor_size = BRIEF_descriptor_size
+        self.HOG_orientations = HOG_orientations
         self.folder = folder
 
 
@@ -121,13 +125,14 @@ def get_indices(offset, dim, direction, height):
     return np.array(y_indices), np.array(x_indices)
 
 
-def get_path_cost(slice, offset, parameters):
+def get_path_cost(slice, offset, P1, P2):
     """
     part of the aggregation step, finds the minimum costs in a D x M slice (where M = the number of pixels in the
     given direction)
     :param slice: M x D array from the cost volume.
     :param offset: ignore the pixels on the border.
-    :param parameters: structure containing parameters of the algorithm.
+    :param P1: penalty for disparity difference = 1
+    :param P2: penalty for disparity difference > 1
     :return: M x D array of the minimum costs for a given slice in a given direction.
     """
     other_dim = slice.shape[0]
@@ -137,8 +142,8 @@ def get_path_cost(slice, offset, parameters):
     disparities = np.array(disparities).reshape(disparity_dim, disparity_dim)
 
     penalties = np.zeros(shape=(disparity_dim, disparity_dim), dtype=slice.dtype)
-    penalties[np.abs(disparities - disparities.T) == 1] = parameters.P1
-    penalties[np.abs(disparities - disparities.T) > 1] = parameters.P2
+    penalties[np.abs(disparities - disparities.T) == 1] = P1
+    penalties[np.abs(disparities - disparities.T) > 1] = P2
 
     minimum_cost_path = np.zeros(shape=(other_dim, disparity_dim), dtype=slice.dtype)
     minimum_cost_path[offset - 1, :] = slice[offset - 1, :]
@@ -168,9 +173,9 @@ def aggregate_costs(cost_volume, parameters, paths):
     end = width - 1
 
     average_cost = cost_volume.mean()
-    parameters.P1 = 0.5 * average_cost
-    parameters.P2 = 6 * average_cost
-    print(f"average cost: {average_cost}, p1: {parameters.P1}, p2: {parameters.P2}")
+    P1 = parameters.P1_ratio * average_cost
+    P2 = parameters.P2_ratio * average_cost
+    print(f"average cost: {average_cost}, p1: {P1}, p2: {P2}")
 
     aggregation_volume = np.zeros(shape=(height, width, disparities, paths.size), dtype=cost_volume.dtype)
 
@@ -188,15 +193,15 @@ def aggregate_costs(cost_volume, parameters, paths):
             for x in range(0, width):
                 south = cost_volume[0:height, x, :]
                 north = np.flip(south, axis=0)
-                main_aggregation[:, x, :] = get_path_cost(south, 1, parameters)
-                opposite_aggregation[:, x, :] = np.flip(get_path_cost(north, 1, parameters), axis=0)
+                main_aggregation[:, x, :] = get_path_cost(south, 1, P1, P2)
+                opposite_aggregation[:, x, :] = np.flip(get_path_cost(north, 1, P1, P2), axis=0)
 
         if main.direction == E.direction:
             for y in range(0, height):
                 east = cost_volume[y, 0:width, :]
                 west = np.flip(east, axis=0)
-                main_aggregation[y, :, :] = get_path_cost(east, 1, parameters)
-                opposite_aggregation[y, :, :] = np.flip(get_path_cost(west, 1, parameters), axis=0)
+                main_aggregation[y, :, :] = get_path_cost(east, 1, P1, P2)
+                opposite_aggregation[y, :, :] = np.flip(get_path_cost(west, 1, P1, P2), axis=0)
 
         if main.direction == SE.direction:
             for offset in range(start, end):
@@ -206,8 +211,8 @@ def aggregate_costs(cost_volume, parameters, paths):
                 y_se_idx, x_se_idx = get_indices(offset, dim, SE.direction, None)
                 y_nw_idx = np.flip(y_se_idx, axis=0)
                 x_nw_idx = np.flip(x_se_idx, axis=0)
-                main_aggregation[y_se_idx, x_se_idx, :] = get_path_cost(south_east, 1, parameters)
-                opposite_aggregation[y_nw_idx, x_nw_idx, :] = get_path_cost(north_west, 1, parameters)
+                main_aggregation[y_se_idx, x_se_idx, :] = get_path_cost(south_east, 1, P1, P2)
+                opposite_aggregation[y_nw_idx, x_nw_idx, :] = get_path_cost(north_west, 1, P1, P2)
 
         if main.direction == SW.direction:
             for offset in range(start, end):
@@ -217,8 +222,8 @@ def aggregate_costs(cost_volume, parameters, paths):
                 y_sw_idx, x_sw_idx = get_indices(offset, dim, SW.direction, height - 1)
                 y_ne_idx = np.flip(y_sw_idx, axis=0)
                 x_ne_idx = np.flip(x_sw_idx, axis=0)
-                main_aggregation[y_sw_idx, x_sw_idx, :] = get_path_cost(south_west, 1, parameters)
-                opposite_aggregation[y_ne_idx, x_ne_idx, :] = get_path_cost(north_east, 1, parameters)
+                main_aggregation[y_sw_idx, x_sw_idx, :] = get_path_cost(south_west, 1, P1, P2)
+                opposite_aggregation[y_ne_idx, x_ne_idx, :] = get_path_cost(north_east, 1, P1, P2)
 
         aggregation_volume[:, :, :, path_id] = main_aggregation
         aggregation_volume[:, :, :, path_id + 1] = opposite_aggregation
@@ -244,7 +249,7 @@ def compute_costs(left, right, parameters, save_images):
     assert left.shape[0] == right.shape[0] and left.shape[1] == right.shape[1], 'left & right must have the same shape.'
     assert parameters.max_disparity > 0, 'maximum disparity must be greater than 0.'
 
-    BRIEF = parameters.descriptor == 'BRIEF'
+    descriptor = parameters.descriptor
 
     height = left.shape[0]
     width = left.shape[1]
@@ -254,20 +259,47 @@ def compute_costs(left, right, parameters, save_images):
     x_offset = int(cwidth / 2)
     disparity = parameters.max_disparity
 
-    left_img_features = np.zeros(shape=(height, width), dtype=np.uint8 if BRIEF else np.float)
-    right_img_features = np.zeros(shape=(height, width), dtype=np.uint8 if BRIEF else np.float)
-    left_features = np.zeros(shape=(height, width), dtype=np.uint64) if BRIEF else np.zeros(shape=(height, width, parameters.orientations), dtype=np.float)
-    right_features = np.zeros(shape=(height, width), dtype=np.uint64) if BRIEF else np.zeros(shape=(height, width, parameters.orientations), dtype=np.float)
+    if descriptor == "BRIEF":
+        brief_extractor = BRIEF(descriptor_size=parameters.BRIEF_descriptor_size, patch_size=cheight, mode='normal')
+        img_dtype = np.uint8
+        left_features = np.zeros(shape=(height, width, parameters.BRIEF_descriptor_size), dtype=np.bool)
+        right_features = np.zeros(shape=(height, width, parameters.BRIEF_descriptor_size), dtype=np.bool)
+    elif descriptor == "HOG":
+        img_dtype = np.float
+        left_features = np.zeros(shape=(height, width, parameters.HOG_orientations), dtype=np.float)
+        right_features = np.zeros(shape=(height, width, parameters.HOG_orientations), dtype=np.float)
+    else:
+        img_dtype = np.uint8
+        left_features = np.zeros(shape=(height, width), dtype=np.uint64)
+        right_features = np.zeros(shape=(height, width), dtype=np.uint64)
+    left_features_img = np.zeros(shape=(height, width), dtype=img_dtype)
+    right_features_img = np.zeros(shape=(height, width), dtype=img_dtype)
 
     print('\tComputing left and right features...', end='')
     sys.stdout.flush()
     dawn = t.time()
+    if descriptor == 'BRIEF':
+        pixels = cartesian([np.arange(height), np.arange(width)])
+        # LEFT
+        brief_extractor.extract(left, pixels)
+        descriptors = brief_extractor.descriptors
+        left_features[2:-3, 2:-3] = np.reshape(descriptors, (height - cheight + 2, width - cwidth + 2, left_features.shape[-1]))
+        left_features_img[:] = left_features.sum(axis=-1)
+        # RIGHT
+        brief_extractor.extract(right, pixels)
+        descriptors = brief_extractor.descriptors
+        right_features[2:-3, 2:-3] = np.reshape(descriptors, (height - cheight + 2, width - cwidth + 2, right_features.shape[-1]))
+        right_features_img[:] = right_features.sum(axis=-1)
     # pixels on the border will have no features
     for y in range(y_offset, height - y_offset):
         for x in range(x_offset, width - x_offset):
-            center_pixel = left[y, x]
+            # LEFT
             image = left[(y - y_offset):(y + y_offset + 1), (x - x_offset):(x + x_offset + 1)]
-            if BRIEF:
+            if descriptor == 'HOG':
+                left_features[y, x] = hog(image, parameters.HOG_orientations, pixels_per_cell=(cheight, cwidth), cells_per_block=(1, 1))
+                left_features_img[y, x] = left_features[y, x].sum()
+            elif descriptor == 'census':
+                center_pixel = left[y, x]
                 reference = np.full(shape=(cheight, cwidth), fill_value=center_pixel, dtype=np.int64)
                 comparison = image - reference
                 left_census = np.int64(0)
@@ -280,17 +312,16 @@ def compute_costs(left, right, parameters, save_images):
                             else:
                                 bit = 0
                             left_census = left_census | bit
-                left_img_features[y, x] = np.uint8(left_census)
+                left_features_img[y, x] = np.uint8(left_census)
                 left_features[y, x] = left_census
-            else:  # HOG
-                # print(y, x, image.shape)
-                left_features[y, x] = hog(image, parameters.orientations, pixels_per_cell=(cheight, cwidth), cells_per_block=(1, 1))
-                # print(left_features[y, x])
-                left_img_features[y, x] = left_features[y, x].sum()
 
-            center_pixel = right[y, x]
+            # RIGHT
             image = right[(y - y_offset):(y + y_offset + 1), (x - x_offset):(x + x_offset + 1)]
-            if BRIEF:
+            if descriptor == 'HOG':
+                right_features[y, x] = hog(image, parameters.HOG_orientations, pixels_per_cell=(cheight, cwidth), cells_per_block=(1, 1))
+                right_features_img[y, x] = right_features[y, x].sum()
+            elif descriptor == 'census':
+                center_pixel = right[y, x]
                 reference = np.full(shape=(cheight, cwidth), fill_value=center_pixel, dtype=np.int64)
                 comparison = image - reference
                 right_census = np.int64(0)
@@ -303,33 +334,47 @@ def compute_costs(left, right, parameters, save_images):
                             else:
                                 bit = 0
                             right_census = right_census | bit
-                right_img_features[y, x] = np.uint8(right_census)
+                right_features_img[y, x] = np.uint8(right_census)
                 right_features[y, x] = right_census
-            else:  # HOG
-                right_features[y, x] = hog(image, parameters.orientations, pixels_per_cell=(cheight, cwidth), cells_per_block=(1, 1))
-                right_img_features[y, x] = right_features[y, x].sum()
 
     dusk = t.time()
     print('\t(done in {:.2f}s)'.format(dusk - dawn))
 
     if save_images:
-        if not BRIEF:
+        if descriptor != "census":
             # Normalizing the summed features for visualization
-            left_img_features = 255 * (left_img_features - left_img_features.min()) / (left_img_features.max() - left_img_features.min())
-            right_img_features = 255 * (right_img_features - right_img_features.min()) / (right_img_features.max() - right_img_features.min())
-        cv2.imwrite(f'{parameters.folder}/left_features.png', left_img_features)
-        cv2.imwrite(f'{parameters.folder}/right_features.png', right_img_features)
+            left_features_img = 255 * (left_features_img - left_features_img.min()).astype(np.float) / (left_features_img.max() - left_features_img.min()).astype(np.float)
+            right_features_img = 255 * (right_features_img - right_features_img.min()).astype(np.float) / (right_features_img.max() - right_features_img.min()).astype(np.float)
+        cv2.imwrite(f'{parameters.folder}/left_features.png', left_features_img)
+        cv2.imwrite(f'{parameters.folder}/right_features.png', right_features_img)
 
     print('\tComputing cost volumes...', end='')
     sys.stdout.flush()
     dawn = t.time()
-    left_cost_volume = np.zeros(shape=(height, width, disparity), dtype=np.uint32 if BRIEF else np.float)
-    right_cost_volume = np.zeros(shape=(height, width, disparity), dtype=np.uint32 if BRIEF else np.float)
-    lfeatures = np.zeros(shape=(height, width), dtype=np.int64) if BRIEF else np.zeros(shape=(height, width, parameters.orientations), dtype=np.float)
-    rfeatures = np.zeros(shape=(height, width), dtype=np.int64) if BRIEF else np.zeros(shape=(height, width, parameters.orientations), dtype=np.float)
+
+    if descriptor == "BRIEF":
+        cost_volume_dtype = np.uint16
+        lfeatures = np.zeros(shape=(height, width, parameters.BRIEF_descriptor_size), dtype=np.bool)
+        rfeatures = np.zeros(shape=(height, width, parameters.BRIEF_descriptor_size), dtype=np.bool)
+    elif descriptor == "HOG":
+        cost_volume_dtype = np.float
+        lfeatures = np.zeros(shape=(height, width, parameters.HOG_orientations), dtype=np.float)
+        rfeatures = np.zeros(shape=(height, width, parameters.HOG_orientations), dtype=np.float)
+    else:
+        cost_volume_dtype = np.uint32
+        lfeatures = np.zeros(shape=(height, width), dtype=np.int64)
+        rfeatures = np.zeros(shape=(height, width), dtype=np.int64)
+    left_cost_volume = np.zeros(shape=(height, width, disparity), dtype=cost_volume_dtype)
+    right_cost_volume = np.zeros(shape=(height, width, disparity), dtype=cost_volume_dtype)
     for d in range(0, disparity):
+        # LEFT
         rfeatures[:, (x_offset + d):(width - x_offset)] = right_features[:, x_offset:(width - d - x_offset)]
-        if BRIEF:
+        if descriptor == 'BRIEF':
+            left_cost_volume[:, :, d] = np.count_nonzero(left_features != rfeatures, axis=-1)
+        elif descriptor == "HOG":
+            diff = left_features - rfeatures  # (H, W, orientations)
+            left_cost_volume[:, :, d] = np.sqrt(np.sum(diff**2, 2))  # Summed Squared Difference along the last axis
+        else:
             left_xor = np.int64(np.bitwise_xor(np.int64(left_features), rfeatures))
             left_distance = np.zeros(shape=(height, width), dtype=np.uint32)
             while not np.all(left_xor == 0):
@@ -338,12 +383,15 @@ def compute_costs(left, right, parameters, save_images):
                 left_xor[mask] = np.bitwise_and(left_xor[mask], tmp[mask])
                 left_distance[mask] = left_distance[mask] + 1
             left_cost_volume[:, :, d] = left_distance
-        else:
-            diff = left_features - rfeatures  # (H, W, orientations)
-            left_cost_volume[:, :, d] = np.sqrt(np.sum(diff**2, 2))  # Summed Squared Difference along the last axis
 
+        # RIGHT
         lfeatures[:, x_offset:(width - d - x_offset)] = left_features[:, (x_offset + d):(width - x_offset)]
-        if BRIEF:
+        if descriptor == 'BRIEF':
+            right_cost_volume[:, :, d] = np.count_nonzero(right_features != lfeatures, axis=-1)
+        elif descriptor == 'HOG':
+            diff = right_features - lfeatures  # (H, W, orientations)
+            right_cost_volume[:, :, d] = np.sqrt(np.sum(diff**2, 2))  # Summed Squared Difference along the last axis
+        else:
             right_xor = np.int64(np.bitwise_xor(np.int64(right_features), lfeatures))
             right_distance = np.zeros(shape=(height, width), dtype=np.uint32)
             while not np.all(right_xor == 0):
@@ -352,9 +400,6 @@ def compute_costs(left, right, parameters, save_images):
                 right_xor[mask] = np.bitwise_and(right_xor[mask], tmp[mask])
                 right_distance[mask] = right_distance[mask] + 1
             right_cost_volume[:, :, d] = right_distance
-        else:
-            diff = right_features - lfeatures  # (H, W, orientations)
-            right_cost_volume[:, :, d] = np.sqrt(np.sum(diff**2, 2))  # Summed Squared Difference along the last axis
 
     dusk = t.time()
     print('\t(done in {:.2f}s)'.format(dusk - dawn))
@@ -401,7 +446,7 @@ def get_recall(disparity, gt_path, args):
     return float(correct) / gt.size
 
 
-def evaluate_disparity_map(disparity, gt_path, args):
+def evaluate_disparity_map(disparity, gt_path, dataset, output_image_name, args):
     """
     Computes the recall and the BMPRE (Bad Matching Pixels Relative Error) of the disparity map.
     It takes into account the relative error of disparities above a threshold and scales them based on the ground truth
@@ -409,13 +454,27 @@ def evaluate_disparity_map(disparity, gt_path, args):
     https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=6491759
     :param disparity: disparity image.
     :param gt_path: path to ground-truth image.
+    :param dataset: name of the dataset.
+    :param output_image_name: path and name of the output images (diff and error).
     :param args: program arguments.
     :return: evaluation value of the disparity map (the lower the better).
     """
     gt = np.float32(cv2.imread(gt_path, cv2.IMREAD_GRAYSCALE))
-    gt = np.int16(gt / 255.0 * float(args.disp))  # between 0 and args.disp (64)
+    print("gt", gt.min(), gt.mean(), gt.max())
+    print("disparity", disparity.min(), disparity.mean(), disparity.max())
+    if dataset.endswith("2003"):
+        gt = np.int16(gt / 255.0 * float(args.disp))  # between 0 and args.disp (64)
+    elif dataset.endswith("2005"):
+        gt = np.int16(gt / 3.0)  # between 0 and maximum disparity of the image (all values are true pixel disparities)
+    else:
+        print("Error, unknown dataset")
+        return 0, 0
     disparity = np.int16(np.float32(disparity) / 255.0 * float(args.disp))  # between 0 and args.disp (64)
+    print("gt", gt.min(), gt.mean(), gt.max())
+    print("disparity", disparity.min(), disparity.mean(), disparity.max())
     diff = np.abs(disparity - gt)
+    cv2.imwrite(f'{output_image_name}_diff.png', diff / float(args.disp) * 255)
+    cv2.imwrite(f'{output_image_name}_error.png', (diff > 3) * 255)
     recall = np.count_nonzero(np.abs(disparity - gt) <= 3)
     diff[np.where(diff <= 3)] = 0
     gt[np.where(gt == 0)] = np.iinfo(np.int16).max
@@ -430,78 +489,94 @@ def sgm():
     :return: void.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument('--left', default='cones/im2.png', help='name (path) to the left image')
-    parser.add_argument('--right', default='cones/im6.png', help='name (path) to the right image')
-    parser.add_argument('--left_gt', default='cones/disp2.png', help='name (path) to the left ground-truth image')
-    parser.add_argument('--right_gt', default='cones/disp6.png', help='name (path) to the right ground-truth image')
-    parser.add_argument('--output', default='disparity_map.png', help='name of the output folder')
+    parser.add_argument('--input', default='.', help='input folder in which to search recursively for stereo pairs')
     parser.add_argument('--disp', default=64, type=int, help='maximum disparity for the stereo pair')
-    parser.add_argument('--images', default=False, type=bool, help='save intermediate representations')
-    parser.add_argument('--eval', default=None, help='evaluate disparity map with recall and BMPRE, both with 3 pixel threshold')
-    parser.add_argument('--descriptor', default='BRIEF', help='descriptor method for cost calculation (BRIEF or HOG)')
-    parser.add_argument('--orientations', default=9, type=int, help='number of orientations to use with HOG)')
+    parser.add_argument('--images', default=True, type=bool, help='save intermediate representations')
+    parser.add_argument('--eval', default=True, type=bool, help='evaluate disparity map with recall and BMPRE, both with 3 pixel threshold')
+    parser.add_argument('--descriptor', default='BRIEF', help='descriptor method for cost calculation (BRIEF, HOG or census)')
     args = parser.parse_args()
 
-    left_name = args.left
-    right_name = args.right
-    left_gt_name = args.left_gt
-    right_gt_name = args.right_gt
-    output_folder = args.output
+    input_folder = args.input
     disparity = args.disp
     save_images = args.images
     evaluate = args.eval
     descriptor = args.descriptor
-    orientations = args.orientations
 
     dawn = t.time()
 
-    if not os.path.exists(output_folder):
-        os.mkdir(output_folder)
+    for path, subfolders, files in os.walk(input_folder):
+        if "sgm_results" in path.split("\\"):
+            continue
 
-    parameters = Parameters(max_disparity=disparity, P1=10, P2=120, csize=(7, 7), bsize=(3, 3), descriptor=descriptor, orientations=orientations, folder=output_folder)
-    paths = Paths()
+        if len(files) != 4:
+            continue
 
-    print('\nLoading images...')
-    left, right = load_images(left_name, right_name, parameters)
+        gts = []
+        views = []
+        for file in files:
+            (gts if file.startswith("disp") else views).append(file)
+        if len(gts) != 2 or len(views) != 2:
+            continue
 
-    print('\nStarting cost computation...')
-    left_cost_volume, right_cost_volume = compute_costs(left, right, parameters, save_images)
-    if save_images:
-        left_disparity_map = np.uint8(normalize(np.argmin(left_cost_volume, axis=2), parameters))
-        cv2.imwrite(f'{output_folder}/disp_map_left_cost_volume.png', left_disparity_map)
-        right_disparity_map = np.uint8(normalize(np.argmin(right_cost_volume, axis=2), parameters))
-        cv2.imwrite(f'{output_folder}/disp_map_right_cost_volume.png', right_disparity_map)
+        print(path)
 
-    print('\nStarting left aggregation computation...')
-    left_aggregation_volume = aggregate_costs(left_cost_volume, parameters, paths)
-    print('\nStarting right aggregation computation...')
-    right_aggregation_volume = aggregate_costs(right_cost_volume, parameters, paths)
+        left_gt = path + "/" + gts[0]
+        right_gt = path + "/" + gts[1]
+        left_view = path + "/" + views[0]
+        right_view = path + "/" + views[1]
 
-    print('\nSelecting best disparities...')
-    left_disparity_map = np.uint8(normalize(select_disparity(left_aggregation_volume), parameters))
-    right_disparity_map = np.uint8(normalize(select_disparity(right_aggregation_volume), parameters))
-    if save_images:
-        cv2.imwrite(f'{output_folder}/left_disp_map_no_post_processing.png', left_disparity_map)
-        cv2.imwrite(f'{output_folder}/right_disp_map_no_post_processing.png', right_disparity_map)
+        split_path = path.split('\\')
+        dataset = split_path[-2]
+        output_folder = f"sgm_results/{split_path[-1]}_{descriptor}"
+        if not os.path.exists(output_folder):
+            os.mkdir(output_folder)
 
-    print('\nApplying median filter...')
-    left_disparity_map = cv2.medianBlur(left_disparity_map, parameters.bsize[0])
-    right_disparity_map = cv2.medianBlur(right_disparity_map, parameters.bsize[0])
-    cv2.imwrite(f'{output_folder}/left_disparity_map.png', left_disparity_map)
-    cv2.imwrite(f'{output_folder}/right_disparity_map.png', right_disparity_map)
+        parameters = Parameters(max_disparity=disparity, P1_ratio=0.5, P2_ratio=6, csize=(7, 7), bsize=(3, 3),
+                                descriptor=descriptor, BRIEF_descriptor_size=128, HOG_orientations=9, folder=output_folder)
+        paths = Paths()
 
-    if evaluate:
-        f = open(f'{output_folder}/result.txt', 'w+')
-        print('\nEvaluating left disparity map...')
-        recall, bmpre = evaluate_disparity_map(left_disparity_map, left_gt_name, args)
-        print('\tRecall = {:.2f}%'.format(recall * 100.0))
-        print('\tBMPRE = {:.5f}'.format(bmpre))
-        f.write('{:.2f};{:.5f}\n'.format(recall * 100.0, bmpre))
-        print('\nEvaluating right disparity map...')
-        recall, bmpre = evaluate_disparity_map(right_disparity_map, right_gt_name, args)
-        print('\tRecall = {:.2f}%'.format(recall * 100.0))
-        print('\tBMPRE = {:.5f}'.format(bmpre))
-        f.write('{:.2f};{:.5f}\n'.format(recall * 100.0, bmpre))
+        print('\nLoading images...')
+        left, right = load_images(left_view, right_view, parameters)
+
+        print('\nStarting cost computation...')
+        left_cost_volume, right_cost_volume = compute_costs(left, right, parameters, save_images)
+        if save_images:
+            left_disparity_map = np.uint8(normalize(np.argmin(left_cost_volume, axis=2), parameters))
+            cv2.imwrite(f'{output_folder}/disp_map_left_cost_volume.png', left_disparity_map)
+            right_disparity_map = np.uint8(normalize(np.argmin(right_cost_volume, axis=2), parameters))
+            cv2.imwrite(f'{output_folder}/disp_map_right_cost_volume.png', right_disparity_map)
+
+        print('\nStarting left aggregation computation...')
+        left_aggregation_volume = aggregate_costs(left_cost_volume, parameters, paths)
+        print('\nStarting right aggregation computation...')
+        right_aggregation_volume = aggregate_costs(right_cost_volume, parameters, paths)
+
+        print('\nSelecting best disparities...')
+        left_disparity_map = np.uint8(normalize(select_disparity(left_aggregation_volume), parameters))
+        right_disparity_map = np.uint8(normalize(select_disparity(right_aggregation_volume), parameters))
+        if save_images:
+            cv2.imwrite(f'{output_folder}/left_disp_map_no_post_processing.png', left_disparity_map)
+            cv2.imwrite(f'{output_folder}/right_disp_map_no_post_processing.png', right_disparity_map)
+
+        print('\nApplying median filter...')
+        left_disparity_map = cv2.medianBlur(left_disparity_map, parameters.bsize[0])
+        right_disparity_map = cv2.medianBlur(right_disparity_map, parameters.bsize[0])
+        cv2.imwrite(f'{output_folder}/left_disparity_map.png', left_disparity_map)
+        cv2.imwrite(f'{output_folder}/right_disparity_map.png', right_disparity_map)
+
+        if evaluate:
+            f = open(f'{output_folder}/result.txt', 'w+')
+            print('\nEvaluating left disparity map...')
+            recall, bmpre = evaluate_disparity_map(left_disparity_map, left_gt, dataset, output_folder + "/left", args)
+            print('\tRecall = {:.2f}%'.format(recall * 100.0))
+            print('\tBMPRE = {:.5f}'.format(bmpre))
+            f.write('{:.2f};{:.5f}\n'.format(recall * 100.0, bmpre))
+            print('\nEvaluating right disparity map...')
+            recall, bmpre = evaluate_disparity_map(right_disparity_map, right_gt, dataset, output_folder + "/right", args)
+            print('\tRecall = {:.2f}%'.format(recall * 100.0))
+            print('\tBMPRE = {:.5f}'.format(bmpre))
+            f.write('{:.2f};{:.5f}\n'.format(recall * 100.0, bmpre))
+            f.close()
 
     dusk = t.time()
     print('\nFin.')
