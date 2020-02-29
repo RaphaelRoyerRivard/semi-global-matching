@@ -1,6 +1,8 @@
 # Semi-Global Matching
 
-Fork of the GitHub project "Semi-Global Matching" by beaupreda.
+Fork of the GitHub project "Semi-Global Matching" by beaupreda for the second homework of 
+the INF6804 Computer Vision class. If you are a student in that class, please refrain from
+using this codebase.
 
 Implementation of the Semi-Global Matching algorithm in Python.
 This version also includes usage of both BRIEF and HOG descriptors and also the usage of
