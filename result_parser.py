@@ -26,7 +26,7 @@ def parse_results():
 
         split_folder = path.split("\\")[-1].split("_")
         img = split_folder[0]
-        descriptor = split_folder[1]
+        descriptor = split_folder[-1]
 
         left = lines[0].split(";")
         left = (float(left[0]), float(left[1]))
@@ -39,11 +39,14 @@ def parse_results():
 
     print(results)
     dataset_groups = {
-        "2003": (["cones", "teddy"], []),
-        "2005": (["Art", "Books", "Dolls", "Laundry", "Moebius", "Reindeer"], [])
+        # "2003": (["cones", "teddy"], []),
+        # "2005": (["Art", "Books", "Dolls", "Laundry", "Moebius", "Reindeer"], [])
+        "baseline": (["Art", "Books", "Dolls"], []),
+        "intensity": (["ArtI", "BooksI", "DollsI"], []),
+        "texture": (["Cloth1", "Wood1", "Wood2"], [])
     }
-    recall = np.zeros((len(results), 3))
-    bmpre = np.zeros((len(results), 3))
+    recall = np.zeros((len(results), 2))
+    bmpre = np.zeros((len(results), 2))
     for i, img in enumerate(results.keys()):
         for dataset_group in dataset_groups.keys():
             if img in dataset_groups[dataset_group][0]:
@@ -65,20 +68,16 @@ def parse_results():
         # Graph 1: separated for image pair
         x = np.arange(len(labels))
         fig, ax = plt.subplots()
-        rects1 = ax.bar(x - bar_width, values[:, 0], bar_width, label='BRIEF')
-        rects2 = ax.bar(x, values[:, 1], bar_width, label='census')
-        rects3 = ax.bar(x + bar_width, values[:, 2], bar_width, label='HOG')
+        rects1 = ax.bar(x - bar_width / 2, values[:, 0], bar_width, label='BRIEF')
+        rects2 = ax.bar(x + bar_width / 2, values[:, 1], bar_width, label='HOG')
         ax.set_xlabel("Paires d\'images")
         ax.set_ylabel(score_label)
         ax.set_title(metric + " pour chaque paire d'images")
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
-        # for tick in ax.get_xticklabels():
-        #     tick.set_rotation(10)
         ax.legend()
         autolabel(rects1, ax, precision)
         autolabel(rects2, ax, precision)
-        autolabel(rects3, ax, precision)
         fig.tight_layout()
         plt.show()
 
@@ -86,11 +85,9 @@ def parse_results():
         x = np.arange(len(dataset_groups))
         fig, ax = plt.subplots()
         brief_values_by_group = [values[dataset_groups[group][1], 0].mean() for group in dataset_groups]
-        census_values_by_group = [values[dataset_groups[group][1], 1].mean() for group in dataset_groups]
-        hog_values_by_group = [values[dataset_groups[group][1], 2].mean() for group in dataset_groups]
-        rects1 = ax.bar(x - bar_width, brief_values_by_group, bar_width, label='BRIEF')
-        rects2 = ax.bar(x, census_values_by_group, bar_width, label='census')
-        rects3 = ax.bar(x + bar_width, hog_values_by_group, bar_width, label='HOG')
+        hog_values_by_group = [values[dataset_groups[group][1], 1].mean() for group in dataset_groups]
+        rects1 = ax.bar(x - bar_width / 2, brief_values_by_group, bar_width, label='BRIEF')
+        rects2 = ax.bar(x + bar_width / 2, hog_values_by_group, bar_width, label='HOG')
         ax.set_xlabel('Groupes de base de données')
         ax.set_ylabel(score_label)
         ax.set_title(metric + " moyen par groupe de base de données")
@@ -99,13 +96,12 @@ def parse_results():
         ax.legend()
         autolabel(rects1, ax, precision)
         autolabel(rects2, ax, precision)
-        autolabel(rects3, ax, precision)
         fig.tight_layout()
         plt.show()
 
         # Graph 3: averaged on all image pairs
-        bar_values = [values[:, desc].mean() for desc in range(3)]
-        bar_labels = ['BRIEF', 'census', 'HOG']
+        bar_values = [values[:, desc].mean() for desc in range(2)]
+        bar_labels = ['BRIEF', 'HOG']
         x = np.arange(len(bar_values))
         rects = plt.bar(x, bar_values, align='center')
         ax = plt.gca()

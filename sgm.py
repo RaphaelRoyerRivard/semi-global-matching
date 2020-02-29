@@ -464,11 +464,8 @@ def evaluate_disparity_map(disparity, gt_path, dataset, output_image_name, args)
     print("disparity", disparity.min(), disparity.mean(), disparity.max())
     if dataset.endswith("2003"):
         gt = np.int16(gt / 255.0 * float(args.disp))  # between 0 and args.disp (64)
-    elif dataset.endswith("2005"):
-        gt = np.int16(gt / 3.0)  # between 0 and maximum disparity of the image (all values are true pixel disparities)
     else:
-        print("Error, unknown dataset")
-        return 0, 0
+        gt = np.int16(gt / 3.0)  # between 0 and maximum disparity of the image (all values are true pixel disparities)
     disparity = np.int16(np.float32(disparity) / 255.0 * float(args.disp))  # between 0 and args.disp (64)
     print("gt", gt.min(), gt.mean(), gt.max())
     print("disparity", disparity.min(), disparity.mean(), disparity.max())
@@ -489,7 +486,7 @@ def sgm():
     :return: void.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input', default='.', help='input folder in which to search recursively for stereo pairs')
+    parser.add_argument('--input', default='./datasets', help='input folder in which to search recursively for stereo pairs')
     parser.add_argument('--disp', default=64, type=int, help='maximum disparity for the stereo pair')
     parser.add_argument('--images', default=True, type=bool, help='save intermediate representations')
     parser.add_argument('--eval', default=True, type=bool, help='evaluate disparity map with recall and BMPRE, both with 3 pixel threshold')
