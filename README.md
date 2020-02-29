@@ -1,6 +1,10 @@
 # Semi-Global Matching
 
+Fork of the GitHub project "Semi-Global Matching" by beaupreda.
+
 Implementation of the Semi-Global Matching algorithm in Python.
+This version also includes usage of both BRIEF and HOG descriptors and also the usage of
+the BMPRE (Bad Matching Pixels Relative Error) metric.
 
 ![](figures/cones.png)
 
@@ -12,18 +16,18 @@ Implementation of the Semi-Global Matching algorithm in Python.
 
 #### Instructions
 ```
-$ git clone https://github.com/beaupreda/semi-global-matching.git
+$ git clone https://github.com/raphaelroyerrivard/semi-global-matching.git
 $ cd path/to/semi-global-matching
 ```
 
 #### Usage
 ```
-python3 sgm.py --left [LEFT IMAGE NAME] --right [RIGHT IMAGE NAME] --left_gt [LEFT GT IMAGE NAME] --right_gt [RIGHT GT IMAGE NAME] --output [OUTPUT FOLDER] --disp [MAXIMUM DISPARITY] --images [TRUE OR FALSE] --eval [TRUE OR FALSE] --descriptor [BRIEF OR HOG] --orientations [ORIENTATION COUNT]
+python3 sgm.py --input [DIRECTORY TREE] --disp [MAXIMUM DISPARITY] --images [TRUE OR FALSE] --eval [TRUE OR FALSE] --descriptor [BRIEF OR HOG OR census]
 ```
 
 #### Example
 ```
-python3 sgm.py --left cones/im2.png --right cones/im6.png --left_gt cones/disp2.png --right_gt cones/disp6.png --output cones_HOG --disp 64 --images True --eval True --descriptor HOG --orientations 9
+python3 sgm.py --input ./datasets --disp 64 --images True --eval True --descriptor HOG
 ```
 
 #### Other implementations
