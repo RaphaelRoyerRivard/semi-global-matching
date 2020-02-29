@@ -107,7 +107,6 @@ def parse_results():
         ax = plt.gca()
         autolabel(rects, ax, precision)
         plt.xticks(x, bar_labels)
-        plt.grid(axis='y')
         plt.title(metric + " moyen sur toutes les paires d'images")
         plt.xlabel('Méthodes')
         plt.ylabel(score_label)
