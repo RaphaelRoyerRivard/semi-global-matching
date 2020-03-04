@@ -17,7 +17,6 @@ import os
 import cv2
 from skimage.feature import hog, BRIEF
 from sklearn.utils.extmath import cartesian
-from scipy.spatial.distance import cdist
 import numpy as np
 
 
