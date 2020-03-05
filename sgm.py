@@ -53,7 +53,7 @@ class Paths:
 
 
 class Parameters:
-    def __init__(self, max_disparity=64, P1_ratio=0.5, P2_ratio=6, csize=(7, 7), bsize=(3, 3), descriptor='BRIEF', BRIEF_descriptor_size=128, HOG_orientations=9, folder="."):
+    def __init__(self, max_disparity=64, P1_ratio=0.5, P2_ratio=6, csize=(7, 7), bsize=(3, 3), descriptor='BRIEF', BRIEF_descriptor_size=256, HOG_orientations=9, folder="."):
         """
         represent all parameters used in the sgm algorithm.
         :param max_disparity: maximum distance between the same pixel in both images.
@@ -282,12 +282,22 @@ def compute_costs(left, right, parameters, save_images):
         # LEFT
         brief_extractor.extract(left, pixels)
         descriptors = brief_extractor.descriptors
-        left_features[2:-3, 2:-3] = np.reshape(descriptors, (height - cheight + 2, width - cwidth + 2, left_features.shape[-1]))
+        if cheight == 7:
+            left_features[2:-3, 2:-3] = np.reshape(descriptors, (height - cheight + 2, width - cwidth + 2, left_features.shape[-1]))  # for cell of 7x7
+        elif cheight == 15:
+            left_features[6:-7, 6:-7] = np.reshape(descriptors, (height - cheight + 2, width - cwidth + 2, left_features.shape[-1]))  # for cell of 15x15
+        elif cheight == 49:
+            left_features[23:-24, 23:-24] = np.reshape(descriptors, (height - cheight + 2, width - cwidth + 2, left_features.shape[-1]))  # for cell of 49x49
         left_features_img[:] = left_features.sum(axis=-1)
         # RIGHT
         brief_extractor.extract(right, pixels)
         descriptors = brief_extractor.descriptors
-        right_features[2:-3, 2:-3] = np.reshape(descriptors, (height - cheight + 2, width - cwidth + 2, right_features.shape[-1]))
+        if cheight == 7:
+            right_features[2:-3, 2:-3] = np.reshape(descriptors, (height - cheight + 2, width - cwidth + 2, right_features.shape[-1]))  # for cell of 7x7
+        elif cheight == 15:
+            right_features[6:-7, 6:-7] = np.reshape(descriptors, (height - cheight + 2, width - cwidth + 2, right_features.shape[-1]))  # for cell of 15x15
+        elif cheight == 49:
+            right_features[23:-24, 23:-24] = np.reshape(descriptors, (height - cheight + 2, width - cwidth + 2, right_features.shape[-1]))  # for cell of 49x49
         right_features_img[:] = right_features.sum(axis=-1)
     # pixels on the border will have no features
     for y in range(y_offset, height - y_offset):
@@ -527,8 +537,8 @@ def sgm():
         if not os.path.exists(output_folder):
             os.mkdir(output_folder)
 
-        parameters = Parameters(max_disparity=disparity, P1_ratio=0.5, P2_ratio=6, csize=(7, 7), bsize=(3, 3),
-                                descriptor=descriptor, BRIEF_descriptor_size=128, HOG_orientations=9, folder=output_folder)
+        parameters = Parameters(max_disparity=disparity, P1_ratio=0.5, P2_ratio=6, csize=(15, 15), bsize=(3, 3),
+                                descriptor=descriptor, BRIEF_descriptor_size=256, HOG_orientations=9, folder=output_folder)
         paths = Paths()
 
         print('\nLoading images...')
